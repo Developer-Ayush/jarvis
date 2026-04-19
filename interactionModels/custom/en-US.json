@@ -21,62 +21,15 @@
                 },
                 {
                     "name": "AMAZON.PauseIntent",
-                    "samples": [
-                        "pause",
-                        "ruko",
-                        "band karo"
-                    ]
+                    "samples": []
                 },
                 {
                     "name": "AMAZON.ResumeIntent",
-                    "samples": [
-                        "resume",
-                        "chalao",
-                        "play karo"
-                    ]
+                    "samples": []
                 },
                 {
                     "name": "AMAZON.NavigateHomeIntent",
                     "samples": []
-                },
-                {
-                    "name": "MusicPlayIntent",
-                    "slots": [
-                        {
-                            "name": "song",
-                            "type": "AMAZON.MusicRecording"
-                        }
-                    ],
-                    "samples": [
-                        "{song} gana chalado",
-                        "{song} gana bajao",
-                        "{song} bajado",
-                        "{song} bajao",
-                        "{song} lagao",
-                        "{song} laga do",
-                        "{song} sunao",
-                        "{song} sun'na hai",
-                        "{song} play karo",
-                        "{song} gana laga do",
-                        "{song} gana sunao",
-                        "mujhe {song} sunao",
-                        "mujhe {song} bajao",
-                        "{song} wala gana chalao",
-                        "{song} song chalao",
-                        "{song} song bajao",
-                        "play {song}",
-                        "play {song} song",
-                        "play the song {song}",
-                        "{song} play",
-                        "play me {song}",
-                        "i want to listen to {song}",
-                        "{song} song play karo",
-                        "bhaiya {song} gana chalado",
-                        "bhaiya {song} bajao",
-                        "bhaiya play {song}",
-                        "bhaiya {song} laga do",
-                        "bhaiya {song} sunao"
-                    ]
                 },
                 {
                     "name": "QueryIntent",
@@ -87,6 +40,9 @@
                         }
                     ],
                     "samples": [
+                        "{query}",
+                        "bhaiya {query}",
+                        "jarvis {query}",
                         "tell me {query}",
                         "what is {query}",
                         "who is {query}",
@@ -105,16 +61,52 @@
                         "what's the latest on {query}",
                         "tell me about {query}",
                         "i need help with {query}",
+                        "play {query}",
+                        "play me {query}",
+                        "play the song {query}",
+                        "i want to listen to {query}",
                         "bata {query}",
                         "kya hai {query}",
+                        "kon hai {query}",
+                        "kaun hai {query}",
+                        "{query} kon hai",
+                        "{query} kaun hai",
+                        "{query} ke bare mein batao",
+                        "{query} kya karta hai",
+                        "{query} kaun hain",
+                        "{query} kya hai",
                         "news kya hai {query}",
                         "aaj ka {query}",
                         "mujhe batao {query}",
-                        "bhaiya {query}",
                         "bhaiya bata {query}",
                         "bhaiya kya hai {query}",
                         "bhaiya search karo {query}",
-                        "bhaiya news do {query}"
+                        "bhaiya news do {query}",
+                        "bhaiya kon hai {query}",
+                        "bhaiya {query} kon hai",
+                        "{query} gana chalado",
+                        "{query} gana bajao",
+                        "{query} bajado",
+                        "{query} bajao",
+                        "{query} lagao",
+                        "{query} laga do",
+                        "{query} sunao",
+                        "{query} play karo",
+                        "{query} gana laga do",
+                        "{query} gana sunao",
+                        "mujhe {query} sunao",
+                        "mujhe {query} bajao",
+                        "{query} song chalao",
+                        "{query} song bajao",
+                        "bhaiya {query} gana chalado",
+                        "bhaiya {query} bajao",
+                        "bhaiya play {query}",
+                        "bhaiya {query} laga do",
+                        "bhaiya {query} sunao",
+                        "{query} ka daam kya hai",
+                        "{query} rate kya hai",
+                        "{query} ke baare mein batao",
+                        "mujhe {query} ke baare mein batao"
                     ]
                 }
             ],
@@ -122,22 +114,6 @@
         },
         "dialog": {
             "intents": [
-                {
-                    "name": "MusicPlayIntent",
-                    "confirmationRequired": false,
-                    "prompts": {},
-                    "slots": [
-                        {
-                            "name": "song",
-                            "type": "AMAZON.MusicRecording",
-                            "confirmationRequired": false,
-                            "elicitationRequired": true,
-                            "prompts": {
-                                "elicitation": "Elicit.MusicPlayIntent.song"
-                            }
-                        }
-                    ]
-                },
                 {
                     "name": "QueryIntent",
                     "confirmationRequired": false,
@@ -158,23 +134,6 @@
             "delegationStrategy": "SKILL_RESPONSE"
         },
         "prompts": [
-            {
-                "id": "Elicit.MusicPlayIntent.song",
-                "variations": [
-                    {
-                        "type": "PlainText",
-                        "value": "Kaun sa gana bajana hai?"
-                    },
-                    {
-                        "type": "PlainText",
-                        "value": "Song ka naam batao."
-                    },
-                    {
-                        "type": "PlainText",
-                        "value": "Which song would you like?"
-                    }
-                ]
-            },
             {
                 "id": "Elicit.QueryIntent.query",
                 "variations": [
