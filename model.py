@@ -1,7 +1,7 @@
 """
 model.py — Jarvis AI Alexa Skill
 Decision-making layer using Cohere.
-FIXED: model name updated, robust error handling.
+FIXED: model name updated, robust error handling, better Hindi routing.
 """
 
 import os
@@ -36,6 +36,11 @@ DO NOT answer the query — only classify it.
 Categories:
 -> 'general (query)'        — answerable by an LLM, no real-time data needed.
 -> 'realtime (query)'       — needs current internet data (news, prices, who is X right now, etc.).
+                              Also use for ANY question about a person, celebrity, politician, 
+                              sportsperson, actor, singer — even if phrased in Hindi.
+                              Hindi patterns that mean "who is X": 
+                              "kon hai", "kaun hai", "ke bare mein batao", "kya karta hai", 
+                              "kaun hain", "kiske baare mein", "koun hai".
 -> 'play (song name)'       — user wants to play/listen to a song. Also triggered by Hindi phrases:
                               'gana chalado', 'bajao', 'sunao', 'lagao', 'play karo', 'gana laga do'.
                               Example: 'Sahiba gana chalado' -> 'play Sahiba'
@@ -74,13 +79,33 @@ CHAT_HISTORY = [
     {"role": "Chatbot", "message": "content email to boss"},
     {"role": "User",    "message": "bye"},
     {"role": "Chatbot", "message": "exit"},
+    # Hindi "who is" patterns — teach Cohere these = realtime
+    {"role": "User",    "message": "Virat Kohli kon hai"},
+    {"role": "Chatbot", "message": "realtime who is Virat Kohli"},
+    {"role": "User",    "message": "Modi kon hai"},
+    {"role": "Chatbot", "message": "realtime who is Narendra Modi"},
+    {"role": "User",    "message": "kaun hai Sachin Tendulkar"},
+    {"role": "Chatbot", "message": "realtime who is Sachin Tendulkar"},
+    {"role": "User",    "message": "Amitabh Bachchan kaun hain"},
+    {"role": "Chatbot", "message": "realtime who is Amitabh Bachchan"},
+    {"role": "User",    "message": "Shah Rukh Khan ke bare mein batao"},
+    {"role": "Chatbot", "message": "realtime who is Shah Rukh Khan"},
+    {"role": "User",    "message": "Elon Musk kya karta hai"},
+    {"role": "Chatbot", "message": "realtime what does Elon Musk do"},
+    {"role": "User",    "message": "aaj ka mausam kaisa hai"},
+    {"role": "Chatbot", "message": "realtime today's weather"},
+    {"role": "User",    "message": "IPL mein aaj kaun jeeta"},
+    {"role": "Chatbot", "message": "realtime IPL match result today"},
+    {"role": "User",    "message": "dollar ka rate kya hai"},
+    {"role": "Chatbot", "message": "realtime dollar exchange rate"},
+    {"role": "User",    "message": "petrol ka daam kya hai"},
+    {"role": "Chatbot", "message": "realtime petrol price today"},
 ]
 
 
 def FirstLayerDMM(prompt: str) -> list:
     try:
         co = _get_client()
-        # Use command-r-plus as fallback if command-r7b fails
         for model in ["command-r7b-12-2024", "command-r-plus", "command-r"]:
             try:
                 stream = co.chat_stream(
@@ -96,7 +121,7 @@ def FirstLayerDMM(prompt: str) -> list:
                 for event in stream:
                     if event.event_type == "text-generation":
                         response += event.text
-                break  # success
+                break
             except Exception as model_err:
                 logger.warning(f"Model {model} failed: {model_err}, trying next...")
                 response = ""
