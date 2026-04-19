@@ -6,7 +6,7 @@ Lazy Groq client init so import errors don't crash the whole app.
 import datetime
 import os
 import logging
-from googlesearch import search
+from duckduckgo_search import DDGS
 from groq import Groq
 
 logger = logging.getLogger(__name__)
@@ -41,15 +41,17 @@ _BASE_CHAT = [
 
 def _google_search(query: str, num: int = 5) -> str:
     try:
-        results = list(search(query, advanced=True, num_results=num))
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=num))
+        if not results:
+            return f"Search results for '{query}':\n[start]\nNo results found.\n[end]"
+        out = f"Search results for '{query}':\n[start]\n"
+        for r in results:
+            out += f"Title: {r.get('title', '')}\nDescription: {r.get('body', '')}\n\n"
+        return out + "[end]"
     except Exception as exc:
-        logger.warning(f"Google search error: {exc}")
+        logger.warning(f"DuckDuckGo search error: {exc}")
         return f"Search results for '{query}' are unavailable right now."
-
-    out = f"Search results for '{query}':\n[start]\n"
-    for r in results:
-        out += f"Title: {r.title}\nDescription: {r.description}\n\n"
-    return out + "[end]"
 
 
 def _now_info() -> str:
