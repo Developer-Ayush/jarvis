@@ -3,6 +3,6 @@ ask-sdk-core
 ask-sdk-webservice-support
 groq==0.9.0
 cohere==5.13.0
-googlesearch-python==1.2.3
+duckduckgo-search==6.3.7
 requests==2.32.3
 httpx==0.27.2
