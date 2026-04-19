@@ -1,7 +1,6 @@
 """
 model.py — Jarvis AI Alexa Skill
 Decision-making layer using Cohere.
-FIXED: model name updated, robust error handling, better Hindi routing.
 """
 
 import os
@@ -36,10 +35,10 @@ DO NOT answer the query — only classify it.
 Categories:
 -> 'general (query)'        — answerable by an LLM, no real-time data needed.
 -> 'realtime (query)'       — needs current internet data (news, prices, who is X right now, etc.).
-                              Also use for ANY question about a person, celebrity, politician, 
+                              Also use for ANY question about a person, celebrity, politician,
                               sportsperson, actor, singer — even if phrased in Hindi.
-                              Hindi patterns that mean "who is X": 
-                              "kon hai", "kaun hai", "ke bare mein batao", "kya karta hai", 
+                              Hindi patterns that mean "who is X":
+                              "kon hai", "kaun hai", "ke bare mein batao", "kya karta hai",
                               "kaun hain", "kiske baare mein", "koun hai".
 -> 'play (song name)'       — user wants to play/listen to a song. Also triggered by Hindi phrases:
                               'gana chalado', 'bajao', 'sunao', 'lagao', 'play karo', 'gana laga do'.
@@ -79,7 +78,6 @@ CHAT_HISTORY = [
     {"role": "Chatbot", "message": "content email to boss"},
     {"role": "User",    "message": "bye"},
     {"role": "Chatbot", "message": "exit"},
-    # Hindi "who is" patterns — teach Cohere these = realtime
     {"role": "User",    "message": "Virat Kohli kon hai"},
     {"role": "Chatbot", "message": "realtime who is Virat Kohli"},
     {"role": "User",    "message": "Modi kon hai"},
