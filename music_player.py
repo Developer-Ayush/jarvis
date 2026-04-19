@@ -33,8 +33,8 @@ def _load_api_keys():
     return keys
 
 
-_API_KEYS = _load_api_keys()
-_key_index = 0  # round-robin pointer
+_API_KEYS  = _load_api_keys()
+_key_index = 0
 
 
 # ── YouTube scraper ────────────────────────────────────────────────────────────
@@ -49,7 +49,34 @@ HEADERS = {
 }
 
 
-def _youtube_search(query):
+def _clean_title(raw: str) -> str:
+    """Remove escape sequences and junk from a scraped YouTube title."""
+    # Unescape common JSON escape sequences
+    title = raw.replace("\\\\", "\\")
+    title = title.replace('\\"', '"')
+    title = title.replace("\\/", "/")
+    title = title.replace("\\n", " ")
+    title = title.replace("\\r", "")
+    title = title.replace("\\t", " ")
+    title = title.strip()
+    return title
+
+
+def _is_valid_title(title: str) -> bool:
+    """Return False if the title looks like garbage (single char, only symbols, etc.)."""
+    if not title:
+        return False
+    # Strip whitespace and check length
+    t = title.strip()
+    if len(t) <= 2:
+        return False
+    # If it's only non-alphanumeric characters it's garbage
+    if not any(c.isalnum() for c in t):
+        return False
+    return True
+
+
+def _youtube_search(query: str):
     try:
         url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
         r = requests.get(url, headers=HEADERS, timeout=8)
@@ -57,15 +84,60 @@ def _youtube_search(query):
             logger.error(f"YouTube search returned {r.status_code}")
             return None, None
 
+        # Extract video IDs
         video_ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', r.text)
-        titles    = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"', r.text)
-
         if not video_ids:
             logger.error(f"No video IDs found for: {query}")
             return None, None
 
         video_id = video_ids[0]
-        title    = titles[0] if titles else query
+
+        # ── Try multiple title extraction patterns ─────────────────────────────
+
+        title = None
+
+        # Pattern 1: standard runs title
+        matches = re.findall(
+            r'"title"\s*:\s*\{"runs"\s*:\s*\[\{"text"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"',
+            r.text
+        )
+        for m in matches:
+            candidate = _clean_title(m)
+            if _is_valid_title(candidate):
+                title = candidate
+                break
+
+        # Pattern 2: simpleText title
+        if not title:
+            matches = re.findall(
+                r'"title"\s*:\s*\{"simpleText"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"',
+                r.text
+            )
+            for m in matches:
+                candidate = _clean_title(m)
+                if _is_valid_title(candidate):
+                    title = candidate
+                    break
+
+        # Pattern 3: accessibility label (usually "Title - Author - Duration")
+        if not title:
+            matches = re.findall(
+                r'"accessibilityData"\s*:\s*\{"label"\s*:\s*"([^"]{10,})"',
+                r.text
+            )
+            for m in matches:
+                candidate = _clean_title(m)
+                # accessibility label has extra info, just take first part
+                candidate = candidate.split(" - ")[0].strip()
+                if _is_valid_title(candidate):
+                    title = candidate
+                    break
+
+        # Fallback: use the search query itself as title
+        if not title:
+            title = query
+            logger.warning(f"Could not extract title for {video_id}, using query: '{query}'")
+
         logger.info(f"YouTube found: '{title}' ({video_id})")
         return video_id, title
 
@@ -77,16 +149,15 @@ def _youtube_search(query):
 # ── RapidAPI caller with key rotation ─────────────────────────────────────────
 
 def _mp36_audio_url(video_id):
-    global _key_index  # declared at the very top of the function
+    global _key_index
 
     if not _API_KEYS:
-        logger.error("No RapidAPI keys found! Set RapidAPIKey, RapidAPIKey2 ... in Vercel env vars.")
+        logger.error("No RapidAPI keys found!")
         return None
 
-    num_keys = len(_API_KEYS)
-    logger.info(f"RapidAPI key pool: {num_keys} key(s) available")
-
+    num_keys   = len(_API_KEYS)
     start_index = _key_index % num_keys
+
     for attempt in range(num_keys):
         key_pos = (start_index + attempt) % num_keys
         api_key = _API_KEYS[key_pos]
@@ -100,7 +171,6 @@ def _mp36_audio_url(video_id):
             logger.warning(f"Key [{key_pos + 1}/{num_keys}] {masked} failed, trying next...")
             continue
 
-        # Success — advance pointer for next call
         _key_index = (key_pos + 1) % num_keys
         logger.info(f"Key [{key_pos + 1}/{num_keys}] {masked} succeeded")
         return result
@@ -164,7 +234,7 @@ def _call_mp36(video_id, api_key, masked):
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def get_youtube_stream(query):
+def get_youtube_stream(query: str):
     """
     Returns (stream_url, title, None) on success.
     Returns (None, None, None) on failure.
