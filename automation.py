@@ -6,7 +6,7 @@ Lazy Groq client init so import errors don't crash the whole app.
 import os
 import logging
 import requests
-from googlesearch import search
+from duckduckgo_search import DDGS
 from groq import Groq
 
 logger = logging.getLogger(__name__)
@@ -28,17 +28,19 @@ def _get_client():
 
 def _google_search_spoken(topic: str) -> str:
     try:
-        results = list(search(topic, advanced=True, num_results=3))
+        with DDGS() as ddgs:
+            results = list(ddgs.text(topic, max_results=3))
         if not results:
-            return f"I couldn't find any Google results for {topic}."
-        answer = f"Here are the top Google results for {topic}. "
+            return f"I couldn't find any results for {topic}."
+        answer = f"Here are the top results for {topic}. "
         for i, r in enumerate(results, 1):
-            desc = r.description or ""
-            answer += f"Result {i}: {r.title}. {desc}. "
+            title = r.get("title", "")
+            desc  = r.get("body", "")
+            answer += f"Result {i}: {title}. {desc}. "
         return answer.strip()
     except Exception as exc:
-        logger.error(f"Google search error: {exc}")
-        return f"I had trouble searching Google for {topic}."
+        logger.error(f"Search error: {exc}")
+        return f"I had trouble searching for {topic}."
 
 
 def _youtube_search_spoken(topic: str) -> str:
