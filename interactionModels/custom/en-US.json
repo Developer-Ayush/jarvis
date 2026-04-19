@@ -40,7 +40,6 @@
                         }
                     ],
                     "samples": [
-                        "{query}",
                         "bhaiya {query}",
                         "jarvis {query}",
                         "tell me {query}",
