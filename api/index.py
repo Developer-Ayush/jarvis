@@ -1,10 +1,11 @@
 """
 api/index.py — Jarvis AI Alexa Skill (Vercel entry point)
-FIXED: oscrypto Python 3.12/OpenSSL 3.x patch, better error reporting.
+FIXED: oscrypto patch, better error reporting, proper Alexa response encoding.
 """
 
 import sys
 import os
+import json
 import logging
 import traceback
 
@@ -12,10 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── oscrypto patch (fixes Python 3.12 + OpenSSL 3.x incompatibility) ──────────
-# oscrypto's regex only matches single-digit patch versions (e.g. 3.0.2)
-# but OpenSSL 3.0.13+ has two-digit patch → breaks certvalidator → breaks ask_sdk
-# This patch must run BEFORE any ask_sdk import.
+# ── oscrypto patch ─────────────────────────────────────────────────────────────
 try:
     import re
     from cffi import FFI
@@ -52,7 +50,7 @@ skill_handler = None
 
 # ── Step 1: imports ────────────────────────────────────────────────────────────
 try:
-    from flask import Flask, request, jsonify, Response as FlaskResponse
+    from flask import Flask, request, jsonify
 except Exception:
     IMPORT_ERRORS["flask"] = traceback.format_exc()
 
@@ -165,12 +163,10 @@ if not IMPORT_ERRORS:
                     .response
                 )
 
-            # First check automations (open, close, google search, content, etc.)
             auto = handle_automation(query.lower())
             if auto:
                 return handler_input.response_builder.speak(auto).ask("Aur kuch?").response
 
-            # Decision model routes the query
             decisions = FirstLayerDMM(query)
             answer = ""
 
@@ -367,7 +363,19 @@ def alexa_endpoint():
         if response is None:
             logger.error("verify_request_and_dispatch returned None")
             return jsonify({"error": "null response from skill"}), 500
-        return FlaskResponse(response, content_type="application/json")
+
+        # Ensure response is a proper JSON string
+        if isinstance(response, bytes):
+            response = response.decode("utf-8")
+        if isinstance(response, dict):
+            response = json.dumps(response)
+
+        logger.info(f"Alexa response preview: {str(response)[:300]}")
+        return app.response_class(
+            response=response,
+            status=200,
+            mimetype="application/json"
+        )
     except BaseException as e:
         logger.error(f"ALEXA ENDPOINT ERROR: {type(e).__name__}: {e}", exc_info=True)
         return jsonify({"error": f"{type(e).__name__}: {str(e)}"}), 500
@@ -384,7 +392,7 @@ def test_music():
     return jsonify({
         "status": "error",
         "message": f"Stream not found for '{song}'",
-        "tip": "Check RapidAPIKey is set in Vercel env vars. Subscribe free to youtube-mp36 on rapidapi.com",
+        "tip": "Check RapidAPIKey is set in Vercel env vars.",
     }), 500
 
 
