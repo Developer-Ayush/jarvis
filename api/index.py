@@ -1,6 +1,10 @@
 """
 api/index.py — Jarvis AI Alexa Skill (Vercel entry point)
-FIXED: oscrypto patch, better error reporting, proper Alexa response encoding.
+ARCHITECTURE: Single QueryIntent catches everything.
+              Cohere (FirstLayerDMM) classifies and routes:
+              play -> YouTube MP3 stream
+              realtime -> Google Search + Groq summary
+              general -> Groq LLM
 """
 
 import sys
@@ -48,7 +52,7 @@ IMPORT_ERRORS = {}
 SKILL_ERROR   = None
 skill_handler = None
 
-# ── Step 1: imports ────────────────────────────────────────────────────────────
+# ── imports ────────────────────────────────────────────────────────────────────
 try:
     from flask import Flask, request, jsonify
 except Exception:
@@ -56,9 +60,7 @@ except Exception:
 
 try:
     from ask_sdk_core.skill_builder import SkillBuilder
-    from ask_sdk_core.handler_input import HandlerInput
     from ask_sdk_core.utils import is_request_type, is_intent_name
-    from ask_sdk_model import Response
     from ask_sdk_model.interfaces.audioplayer import (
         PlayDirective, PlayBehavior, AudioItem, Stream,
     )
@@ -98,7 +100,98 @@ USERNAME       = os.environ.get("Username", "Sir")
 ASSISTANT_NAME = os.environ.get("AssistantName", "Jarvis")
 app = Flask(__name__)
 
-# ── Step 2: build the Alexa skill ──────────────────────────────────────────────
+
+# ── Core routing function ──────────────────────────────────────────────────────
+
+def _route_query(query: str, handler_input):
+    """
+    Everything flows here.
+    1. Automations check (open/close/reminder etc.)
+    2. Cohere classifies
+    3. Route: play -> YouTube, realtime -> Google+Groq, general -> Groq
+    """
+    logger.info(f"Routing query: '{query}'")
+
+    # Step 1: automations
+    auto = handle_automation(query.lower())
+    if auto:
+        return handler_input.response_builder.speak(auto).ask("Aur kuch?").response
+
+    # Step 2: Cohere classifies
+    decisions = FirstLayerDMM(query)
+    logger.info(f"Cohere decisions: {decisions}")
+
+    answer = ""
+
+    for d in decisions:
+
+        # ── Music ──────────────────────────────────────────────────────────────
+        if d.startswith("play "):
+            song = d.removeprefix("play ").strip()
+            stream_url, title, _ = get_youtube_stream(song)
+            if stream_url:
+                return (
+                    handler_input.response_builder
+                    .speak(f"Bajata hoon {title}.")
+                    .add_directive(
+                        PlayDirective(
+                            play_behavior=PlayBehavior.REPLACE_ALL,
+                            audio_item=AudioItem(
+                                stream=Stream(
+                                    token=title,
+                                    url=stream_url,
+                                    offset_in_milliseconds=0,
+                                )
+                            ),
+                        )
+                    )
+                    .set_should_end_session(True)
+                    .response
+                )
+            answer = f"Sorry {USERNAME}, {song} nahi chal pa raha abhi."
+
+        # ── Realtime (Google Search + Groq) ───────────────────────────────────
+        elif d.startswith("realtime "):
+            answer = RealtimeSearchEngine(d.removeprefix("realtime ").strip())
+
+        # ── General (Groq LLM only) ───────────────────────────────────────────
+        elif d.startswith("general "):
+            answer = ChatBot(d.removeprefix("general ").strip())
+
+        # ── Google Search ─────────────────────────────────────────────────────
+        elif d.startswith("google search "):
+            answer = handle_automation(d)
+
+        # ── YouTube Search ────────────────────────────────────────────────────
+        elif d.startswith("youtube search "):
+            answer = handle_automation(d)
+
+        # ── Content writing ───────────────────────────────────────────────────
+        elif d.startswith("content "):
+            answer = handle_automation(d)
+
+        # ── Exit ──────────────────────────────────────────────────────────────
+        elif d == "exit":
+            return (
+                handler_input.response_builder
+                .speak(f"Alvida {USERNAME}! Take care.")
+                .set_should_end_session(True)
+                .response
+            )
+
+        # ── Unknown fallback ──────────────────────────────────────────────────
+        else:
+            answer = ChatBot(query)
+
+    return (
+        handler_input.response_builder
+        .speak(answer or "Samajh nahi aaya, dobara boliye.")
+        .ask("Aur kuch?")
+        .response
+    )
+
+
+# ── Build Alexa skill ──────────────────────────────────────────────────────────
 if not IMPORT_ERRORS:
     try:
         sb = SkillBuilder()
@@ -113,44 +206,6 @@ if not IMPORT_ERRORS:
                 .response
             )
 
-        @sb.request_handler(can_handle_func=is_intent_name("MusicPlayIntent"))
-        def music_handler(handler_input):
-            slots = handler_input.request_envelope.request.intent.slots
-            song  = slots["song"].value if slots.get("song") else None
-            if not song:
-                return (
-                    handler_input.response_builder
-                    .speak("Kaun sa gana bajana hai?")
-                    .ask("Song ka naam batao.")
-                    .response
-                )
-            stream_url, title, _ = get_youtube_stream(song)
-            if not stream_url:
-                return (
-                    handler_input.response_builder
-                    .speak(f"Sorry {USERNAME}, {song} abhi nahi chal pa raha.")
-                    .ask("Koi aur gana batao?")
-                    .response
-                )
-            return (
-                handler_input.response_builder
-                .speak(f"Bajata hoon {title}.")
-                .add_directive(
-                    PlayDirective(
-                        play_behavior=PlayBehavior.REPLACE_ALL,
-                        audio_item=AudioItem(
-                            stream=Stream(
-                                token=title,
-                                url=stream_url,
-                                offset_in_milliseconds=0,
-                            )
-                        ),
-                    )
-                )
-                .set_should_end_session(True)
-                .response
-            )
-
         @sb.request_handler(can_handle_func=is_intent_name("QueryIntent"))
         def query_handler(handler_input):
             slots = handler_input.request_envelope.request.intent.slots
@@ -158,85 +213,20 @@ if not IMPORT_ERRORS:
             if not query:
                 return (
                     handler_input.response_builder
-                    .speak("Kya jaanna chahte hain?")
+                    .speak("Haan boliye, kya jaanna chahte hain?")
                     .ask("Batao.")
                     .response
                 )
+            return _route_query(query, handler_input)
 
-            auto = handle_automation(query.lower())
-            if auto:
-                return handler_input.response_builder.speak(auto).ask("Aur kuch?").response
-
-            decisions = FirstLayerDMM(query)
-            answer = ""
-
-            for d in decisions:
-                if d.startswith("play "):
-                    song = d.removeprefix("play ").strip()
-                    stream_url, title, _ = get_youtube_stream(song)
-                    if stream_url:
-                        return (
-                            handler_input.response_builder
-                            .speak(f"Bajata hoon {title}.")
-                            .add_directive(
-                                PlayDirective(
-                                    play_behavior=PlayBehavior.REPLACE_ALL,
-                                    audio_item=AudioItem(
-                                        stream=Stream(
-                                            token=title,
-                                            url=stream_url,
-                                            offset_in_milliseconds=0,
-                                        )
-                                    ),
-                                )
-                            )
-                            .set_should_end_session(True)
-                            .response
-                        )
-                    answer = f"Sorry {USERNAME}, {song} nahi chal pa raha abhi."
-
-                elif d.startswith("realtime "):
-                    answer = RealtimeSearchEngine(d.removeprefix("realtime ").strip())
-
-                elif d.startswith("general "):
-                    answer = ChatBot(d.removeprefix("general ").strip())
-
-                elif d.startswith("google search "):
-                    answer = handle_automation(d)
-
-                elif d.startswith("youtube search "):
-                    answer = handle_automation(d)
-
-                elif d.startswith("content "):
-                    answer = handle_automation(d)
-
-                elif d == "exit":
-                    return (
-                        handler_input.response_builder
-                        .speak(f"Alvida {USERNAME}! Take care.")
-                        .set_should_end_session(True)
-                        .response
-                    )
-
-                else:
-                    answer = ChatBot(query)
-
+        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.FallbackIntent"))
+        def fallback_handler(handler_input):
             return (
                 handler_input.response_builder
-                .speak(answer or "Samajh nahi aaya, dobara boliye.")
-                .ask("Aur kuch?")
+                .speak("Samajh nahi aaya, dobara boliye.")
+                .ask("Dobara boliye.")
                 .response
             )
-
-        # ── Built-in intents ──────────────────────────────────────────────────
-
-        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.PauseIntent"))
-        def pause_handler(handler_input):
-            return handler_input.response_builder.response
-
-        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.ResumeIntent"))
-        def resume_handler(handler_input):
-            return handler_input.response_builder.response
 
         @sb.request_handler(can_handle_func=is_intent_name("AMAZON.StopIntent"))
         def stop_handler(handler_input):
@@ -256,8 +246,8 @@ if not IMPORT_ERRORS:
             speech = (
                 f"Main {ASSISTANT_NAME} hoon. "
                 "Gana bajane ke liye boliye 'Sahiba gana chalado'. "
-                "News ke liye 'aaj ka news kya hai'. "
-                "Kuch bhi poochh sakte hain."
+                "Koi bhi sawaal poochh sakte hain jaise 'Virat Kohli kon hai'. "
+                "News ke liye 'aaj ka news kya hai'."
             )
             return (
                 handler_input.response_builder
@@ -266,29 +256,13 @@ if not IMPORT_ERRORS:
                 .response
             )
 
-        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.FallbackIntent"))
-        def fallback_handler(handler_input):
-            # Route fallback queries through ChatBot instead of erroring
-            slots = handler_input.request_envelope.request.intent.slots if hasattr(handler_input.request_envelope.request, 'intent') else {}
-            answer = ChatBot("Tell me something helpful.")
-            return (
-                handler_input.response_builder
-                .speak(answer)
-                .ask("Aur kuch?")
-                .response
-            )
+        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.PauseIntent"))
+        def pause_handler(handler_input):
+            return handler_input.response_builder.response
 
-        @sb.request_handler(can_handle_func=lambda input: True)
-        def catch_all_handler(handler_input):
-            # Handles any request type not explicitly covered above
-            request_type = handler_input.request_envelope.request.object_type
-            logger.warning(f"Unhandled request type: {request_type}")
-            return (
-                handler_input.response_builder
-                .speak("Haan boliye, main sun raha hoon.")
-                .ask("Kya help chahiye?")
-                .response
-            )
+        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.ResumeIntent"))
+        def resume_handler(handler_input):
+            return handler_input.response_builder.response
 
         @sb.request_handler(can_handle_func=is_request_type("SessionEndedRequest"))
         def session_ended_handler(handler_input):
@@ -316,6 +290,19 @@ if not IMPORT_ERRORS:
         @sb.request_handler(can_handle_func=is_request_type("PlaybackController.PlayCommandIssued"))
         def playback_command(h): return h.response_builder.response
 
+        # ── Catch-all for any unhandled request type ──────────────────────────
+
+        @sb.request_handler(can_handle_func=lambda input: True)
+        def catch_all_handler(handler_input):
+            request_type = handler_input.request_envelope.request.object_type
+            logger.warning(f"Unhandled request type: {request_type}")
+            return (
+                handler_input.response_builder
+                .speak("Haan boliye, main sun raha hoon.")
+                .ask("Kya help chahiye?")
+                .response
+            )
+
         # ── Global error handler ──────────────────────────────────────────────
 
         @sb.exception_handler(can_handle_func=lambda i, e: True)
@@ -340,18 +327,15 @@ if not IMPORT_ERRORS:
         logger.error(f"SKILL BUILD FAILED:\n{SKILL_ERROR}")
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Flask routes ───────────────────────────────────────────────────────────────
 
 @app.route("/", methods=["GET"])
 def health():
     if IMPORT_ERRORS or SKILL_ERROR:
         problems = list(IMPORT_ERRORS.keys()) + (["skill_build"] if SKILL_ERROR else [])
-        return (
-            f"❌ Errors in: {', '.join(problems)}. "
-            f"Check /debug for details."
-        ), 500
+        return f"❌ Errors in: {', '.join(problems)}. Check /debug for details.", 500
     return (
-        f"✅ {ASSISTANT_NAME} AI skill is running on Vercel!\n"
+        f"✅ {ASSISTANT_NAME} AI skill is running!\n"
         f"Alexa endpoint: /alexa\n"
         f"Test music: /test-music?song=Sahiba\n"
         f"Debug info: /debug"
@@ -361,9 +345,9 @@ def health():
 @app.route("/debug", methods=["GET"])
 def debug():
     return jsonify({
-        "import_errors":   IMPORT_ERRORS,
-        "skill_error":     SKILL_ERROR,
-        "skill_ready":     skill_handler is not None,
+        "import_errors": IMPORT_ERRORS,
+        "skill_error":   SKILL_ERROR,
+        "skill_ready":   skill_handler is not None,
         "env_vars_set": {
             "GroqAPIKey":    bool(os.environ.get("GroqAPIKey")),
             "CohereApiKey":  bool(os.environ.get("CohereApiKey")),
@@ -388,7 +372,6 @@ def alexa_endpoint():
             logger.error("verify_request_and_dispatch returned None")
             return jsonify({"error": "null response from skill"}), 500
 
-        # Ensure response is a proper JSON string
         if isinstance(response, bytes):
             response = response.decode("utf-8")
         if isinstance(response, dict):
