@@ -1,32 +1,71 @@
 """
 music_player.py — Jarvis AI Alexa Skill
 
-Inspired by pywhatkit.playonyt() from the desktop Jarvis repo.
-
 Flow:
   1. Scrape youtube.com/results?q=<query> to get the first video ID
-     (same technique as pywhatkit — free, no API key, just a plain HTML GET)
   2. Pass the video ID to RapidAPI youtube-mp36 to get a direct MP3 URL
-     (one free RapidAPI key, 500 conversions/month)
 
-Why this works from Vercel:
-  - YouTube blocks VIDEO DOWNLOAD requests from datacenter IPs
-  - But youtube.com/results is a public webpage served to everyone (for SEO)
-  - So scraping search results HTML works fine from Vercel
-  - The mp3 conversion is done by RapidAPI (their servers, not Vercel hitting YouTube)
-
-Keys needed: ONLY RapidAPIKey (one key, subscribe free to youtube-mp36 on rapidapi.com)
+Multi-key rotation:
+  Set env vars: RapidAPIKey, RapidAPIKey2, RapidAPIKey3, ... (up to any number)
+  Keys are tried round-robin on each call.
+  If a key returns 429 (rate-limited) or errors, the next key is tried automatically.
+  The rotation index persists in-memory across calls (resets on cold start).
 """
 
 import os
 import re
-import requests
-import logging
 import time
+import logging
+import requests
 
 logger = logging.getLogger(__name__)
 
-RAPIDAPI_KEY = os.environ.get("RapidAPIKey", "")
+# ── Key loader ─────────────────────────────────────────────────────────────────
+
+def _load_api_keys() -> list[str]:
+    """
+    Collect all RapidAPI keys from environment variables.
+    Checks: RapidAPIKey, RapidAPIKey2, RapidAPIKey3, RapidAPIKey4, ...
+    Also checks: RAPIDAPI_KEY_1, RAPIDAPI_KEY_2, ... as an alternative naming style.
+    """
+    keys = []
+
+    # Primary key (no suffix)
+    k = os.environ.get("RapidAPIKey", "").strip()
+    if k:
+        keys.append(k)
+
+    # Numbered keys: RapidAPIKey2, RapidAPIKey3, ...
+    for i in range(2, 20):
+        k = os.environ.get(f"RapidAPIKey{i}", "").strip()
+        if k:
+            keys.append(k)
+
+    # Alternative style: RAPIDAPI_KEY_1, RAPIDAPI_KEY_2, ...
+    for i in range(1, 20):
+        k = os.environ.get(f"RAPIDAPI_KEY_{i}", "").strip()
+        if k and k not in keys:
+            keys.append(k)
+
+    return keys
+
+
+# Load keys once at module import time (Vercel keeps this in memory between warm calls)
+_API_KEYS: list[str] = _load_api_keys()
+_key_index: int = 0  # round-robin pointer
+
+
+def _next_key() -> str | None:
+    """Return the next available API key using round-robin rotation."""
+    global _key_index
+    if not _API_KEYS:
+        return None
+    key = _API_KEYS[_key_index % len(_API_KEYS)]
+    _key_index = (_key_index + 1) % len(_API_KEYS)
+    return key
+
+
+# ── YouTube scraper ────────────────────────────────────────────────────────────
 
 HEADERS = {
     "User-Agent": (
@@ -38,31 +77,27 @@ HEADERS = {
 }
 
 
-def _youtube_search(query: str):
+def _youtube_search(query: str) -> tuple[str | None, str | None]:
     """
     Scrape YouTube search results to find the first video ID and title.
-    Exactly like pywhatkit.playonyt() but returns ID instead of opening browser.
     Returns (video_id, title) or (None, None).
     """
     try:
         url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
         r = requests.get(url, headers=HEADERS, timeout=8)
-
         if r.status_code != 200:
             logger.error(f"YouTube search returned {r.status_code}")
             return None, None
 
-        # Extract video IDs — same data pywhatkit parses
         video_ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', r.text)
-        # Extract titles alongside — grab first title near first video ID
-        titles = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"', r.text)
+        titles    = re.findall(r'"title":\{"runs":\[\{"text":"([^"]+)"', r.text)
 
         if not video_ids:
             logger.error(f"No video IDs found for: {query}")
             return None, None
 
         video_id = video_ids[0]
-        title = titles[0] if titles else query
+        title    = titles[0] if titles else query
         logger.info(f"YouTube found: '{title}' ({video_id})")
         return video_id, title
 
@@ -71,21 +106,61 @@ def _youtube_search(query: str):
         return None, None
 
 
-def _mp36_audio_url(video_id: str):
+# ── RapidAPI caller with key rotation ─────────────────────────────────────────
+
+def _mp36_audio_url(video_id: str) -> str | None:
     """
-    Get direct MP3 URL from RapidAPI youtube-mp36.
-    Subscribe free at: https://rapidapi.com/yosefbiu/api/youtube-mp36
-    Returns audio URL string or None.
+    Get a direct MP3 URL from RapidAPI youtube-mp36.
+    Tries all available API keys before giving up.
+    Skips to the next key on 429 (rate limit) or any error.
     """
-    if not RAPIDAPI_KEY:
-        logger.error("RapidAPIKey not set in Vercel env vars!")
+    if not _API_KEYS:
+        logger.error(
+            "No RapidAPI keys found! "
+            "Set RapidAPIKey, RapidAPIKey2, RapidAPIKey3 ... in Vercel env vars."
+        )
         return None
 
+    num_keys = len(_API_KEYS)
+    logger.info(f"RapidAPI key pool: {num_keys} key(s) available")
+
+    # Try every key in the pool starting from the current round-robin position
+    start_index = _key_index % num_keys
+    for attempt in range(num_keys):
+        key_pos = (start_index + attempt) % num_keys
+        api_key = _API_KEYS[key_pos]
+        masked  = api_key[:6] + "..." + api_key[-4:]  # safe to log
+
+        result = _call_mp36(video_id, api_key, masked)
+        if result == "RATE_LIMITED":
+            logger.warning(f"Key [{key_pos + 1}/{num_keys}] {masked} is rate-limited, trying next...")
+            continue
+        if result is None:
+            logger.warning(f"Key [{key_pos + 1}/{num_keys}] {masked} failed, trying next...")
+            continue
+
+        # Success — advance the global pointer past this key for the next call
+        global _key_index
+        _key_index = (key_pos + 1) % num_keys
+        logger.info(f"Key [{key_pos + 1}/{num_keys}] {masked} succeeded")
+        return result
+
+    logger.error(f"All {num_keys} RapidAPI key(s) exhausted for video {video_id}")
+    return None
+
+
+def _call_mp36(video_id: str, api_key: str, masked: str) -> str | None | str:
+    """
+    Single attempt to fetch MP3 URL for a video_id using the given api_key.
+    Returns:
+      - URL string on success
+      - "RATE_LIMITED" if HTTP 429
+      - None on any other failure
+    """
     headers = {
-        "X-RapidAPI-Key":  RAPIDAPI_KEY,
+        "X-RapidAPI-Key":  api_key,
         "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com",
     }
-
     try:
         r = requests.get(
             "https://youtube-mp36.p.rapidapi.com/dl",
@@ -93,19 +168,25 @@ def _mp36_audio_url(video_id: str):
             headers=headers,
             timeout=12,
         )
+
+        if r.status_code == 429:
+            logger.warning(f"429 Rate-limited: key {masked}")
+            return "RATE_LIMITED"
+
         if r.status_code != 200:
-            logger.error(f"youtube-mp36 {r.status_code}: {r.text[:200]}")
+            logger.error(f"youtube-mp36 returned {r.status_code} for key {masked}: {r.text[:120]}")
             return None
 
         d = r.json()
-        logger.info(f"youtube-mp36 status: {d.get('status')}")
+        status = d.get("status")
+        logger.info(f"youtube-mp36 status={status} | key={masked}")
 
-        if d.get("status") == "ok":
+        if status == "ok":
             return d.get("link")
 
-        # Poll if still converting
-        if d.get("status") == "processing":
-            for attempt in range(4):
+        # Poll if still converting (up to 4 retries, 2s apart)
+        if status == "processing":
+            for poll in range(4):
                 time.sleep(2)
                 r2 = requests.get(
                     "https://youtube-mp36.p.rapidapi.com/dl",
@@ -113,42 +194,47 @@ def _mp36_audio_url(video_id: str):
                     headers=headers,
                     timeout=8,
                 )
+                if r2.status_code == 429:
+                    return "RATE_LIMITED"
                 if r2.status_code == 200:
                     d2 = r2.json()
-                    logger.info(f"Poll {attempt+1}: {d2.get('status')}")
+                    logger.info(f"Poll {poll + 1}/4 status={d2.get('status')} | key={masked}")
                     if d2.get("status") == "ok":
                         return d2.get("link")
 
-        logger.error(f"youtube-mp36 failed: {d}")
+        logger.error(f"youtube-mp36 did not resolve: {d} | key={masked}")
         return None
 
     except Exception as e:
-        logger.error(f"youtube-mp36 error: {e}")
+        logger.error(f"youtube-mp36 exception for key {masked}: {e}")
         return None
 
 
-def get_youtube_stream(query: str):
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+def get_youtube_stream(query: str) -> tuple[str | None, str | None, None]:
     """
-    Main function called by api/index.py
+    Main function called by api/index.py.
 
     Returns (stream_url, title, None) on success.
     Returns (None, None, None) on failure.
 
-    Usage:
-      Set in Vercel env vars:
-        RapidAPIKey = your key from rapidapi.com
-      Subscribe free to: youtube-mp36 on rapidapi.com (500/month free)
-      No YouTube API key needed — search is done by scraping public HTML.
+    Setup in Vercel env vars:
+      RapidAPIKey   = key from account 1
+      RapidAPIKey2  = key from account 2
+      RapidAPIKey3  = key from account 3
+      ...up to as many as you have
+
+    Each key gets 500 free conversions/month on youtube-mp36 (Basic plan).
+    With 6 keys that's 3000 conversions/month — effectively unlimited for personal use.
     """
-    # Step 1: Find the video (free, no key, like pywhatkit)
     video_id, title = _youtube_search(query)
     if not video_id:
         return None, None, None
 
-    # Step 2: Get audio URL (RapidAPI, one key)
     audio_url = _mp36_audio_url(video_id)
     if not audio_url:
         return None, None, None
 
-    logger.info(f"Stream ready: '{title}' -> {audio_url[:60]}")
+    logger.info(f"Stream ready: '{title}' -> {audio_url[:60]}...")
     return audio_url, title, None
