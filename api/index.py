@@ -266,6 +266,30 @@ if not IMPORT_ERRORS:
                 .response
             )
 
+        @sb.request_handler(can_handle_func=is_intent_name("AMAZON.FallbackIntent"))
+        def fallback_handler(handler_input):
+            # Route fallback queries through ChatBot instead of erroring
+            slots = handler_input.request_envelope.request.intent.slots if hasattr(handler_input.request_envelope.request, 'intent') else {}
+            answer = ChatBot("Tell me something helpful.")
+            return (
+                handler_input.response_builder
+                .speak(answer)
+                .ask("Aur kuch?")
+                .response
+            )
+
+        @sb.request_handler(can_handle_func=lambda input: True)
+        def catch_all_handler(handler_input):
+            # Handles any request type not explicitly covered above
+            request_type = handler_input.request_envelope.request.object_type
+            logger.warning(f"Unhandled request type: {request_type}")
+            return (
+                handler_input.response_builder
+                .speak("Haan boliye, main sun raha hoon.")
+                .ask("Kya help chahiye?")
+                .response
+            )
+
         @sb.request_handler(can_handle_func=is_request_type("SessionEndedRequest"))
         def session_ended_handler(handler_input):
             error = getattr(handler_input.request_envelope.request, "error", None)
