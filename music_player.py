@@ -1,15 +1,10 @@
 """
 music_player.py — Jarvis AI Alexa Skill
 
-Flow:
-  1. Scrape youtube.com/results?q=<query> to get the first video ID
-  2. Pass the video ID to RapidAPI youtube-mp36 to get a direct MP3 URL
-
 Multi-key rotation:
   Set env vars: RapidAPIKey, RapidAPIKey2, RapidAPIKey3, ... (up to any number)
   Keys are tried round-robin on each call.
   If a key returns 429 (rate-limited) or errors, the next key is tried automatically.
-  The rotation index persists in-memory across calls (resets on cold start).
 """
 
 import os
@@ -22,47 +17,24 @@ logger = logging.getLogger(__name__)
 
 # ── Key loader ─────────────────────────────────────────────────────────────────
 
-def _load_api_keys() -> list[str]:
-    """
-    Collect all RapidAPI keys from environment variables.
-    Checks: RapidAPIKey, RapidAPIKey2, RapidAPIKey3, RapidAPIKey4, ...
-    Also checks: RAPIDAPI_KEY_1, RAPIDAPI_KEY_2, ... as an alternative naming style.
-    """
+def _load_api_keys():
     keys = []
-
-    # Primary key (no suffix)
     k = os.environ.get("RapidAPIKey", "").strip()
     if k:
         keys.append(k)
-
-    # Numbered keys: RapidAPIKey2, RapidAPIKey3, ...
     for i in range(2, 20):
         k = os.environ.get(f"RapidAPIKey{i}", "").strip()
         if k:
             keys.append(k)
-
-    # Alternative style: RAPIDAPI_KEY_1, RAPIDAPI_KEY_2, ...
     for i in range(1, 20):
         k = os.environ.get(f"RAPIDAPI_KEY_{i}", "").strip()
         if k and k not in keys:
             keys.append(k)
-
     return keys
 
 
-# Load keys once at module import time (Vercel keeps this in memory between warm calls)
-_API_KEYS: list[str] = _load_api_keys()
-_key_index: int = 0  # round-robin pointer
-
-
-def _next_key() -> str | None:
-    """Return the next available API key using round-robin rotation."""
-    global _key_index
-    if not _API_KEYS:
-        return None
-    key = _API_KEYS[_key_index % len(_API_KEYS)]
-    _key_index = (_key_index + 1) % len(_API_KEYS)
-    return key
+_API_KEYS = _load_api_keys()
+_key_index = 0  # round-robin pointer
 
 
 # ── YouTube scraper ────────────────────────────────────────────────────────────
@@ -77,11 +49,7 @@ HEADERS = {
 }
 
 
-def _youtube_search(query: str) -> tuple[str | None, str | None]:
-    """
-    Scrape YouTube search results to find the first video ID and title.
-    Returns (video_id, title) or (None, None).
-    """
+def _youtube_search(query):
     try:
         url = f"https://www.youtube.com/results?search_query={query.replace(' ', '+')}"
         r = requests.get(url, headers=HEADERS, timeout=8)
@@ -108,28 +76,21 @@ def _youtube_search(query: str) -> tuple[str | None, str | None]:
 
 # ── RapidAPI caller with key rotation ─────────────────────────────────────────
 
-def _mp36_audio_url(video_id: str) -> str | None:
-    """
-    Get a direct MP3 URL from RapidAPI youtube-mp36.
-    Tries all available API keys before giving up.
-    Skips to the next key on 429 (rate limit) or any error.
-    """
+def _mp36_audio_url(video_id):
+    global _key_index  # declared at the very top of the function
+
     if not _API_KEYS:
-        logger.error(
-            "No RapidAPI keys found! "
-            "Set RapidAPIKey, RapidAPIKey2, RapidAPIKey3 ... in Vercel env vars."
-        )
+        logger.error("No RapidAPI keys found! Set RapidAPIKey, RapidAPIKey2 ... in Vercel env vars.")
         return None
 
     num_keys = len(_API_KEYS)
     logger.info(f"RapidAPI key pool: {num_keys} key(s) available")
 
-    # Try every key in the pool starting from the current round-robin position
     start_index = _key_index % num_keys
     for attempt in range(num_keys):
         key_pos = (start_index + attempt) % num_keys
         api_key = _API_KEYS[key_pos]
-        masked  = api_key[:6] + "..." + api_key[-4:]  # safe to log
+        masked  = api_key[:6] + "..." + api_key[-4:]
 
         result = _call_mp36(video_id, api_key, masked)
         if result == "RATE_LIMITED":
@@ -139,8 +100,7 @@ def _mp36_audio_url(video_id: str) -> str | None:
             logger.warning(f"Key [{key_pos + 1}/{num_keys}] {masked} failed, trying next...")
             continue
 
-        # Success — advance the global pointer past this key for the next call
-        global _key_index
+        # Success — advance pointer for next call
         _key_index = (key_pos + 1) % num_keys
         logger.info(f"Key [{key_pos + 1}/{num_keys}] {masked} succeeded")
         return result
@@ -149,14 +109,7 @@ def _mp36_audio_url(video_id: str) -> str | None:
     return None
 
 
-def _call_mp36(video_id: str, api_key: str, masked: str) -> str | None | str:
-    """
-    Single attempt to fetch MP3 URL for a video_id using the given api_key.
-    Returns:
-      - URL string on success
-      - "RATE_LIMITED" if HTTP 429
-      - None on any other failure
-    """
+def _call_mp36(video_id, api_key, masked):
     headers = {
         "X-RapidAPI-Key":  api_key,
         "X-RapidAPI-Host": "youtube-mp36.p.rapidapi.com",
@@ -184,7 +137,6 @@ def _call_mp36(video_id: str, api_key: str, masked: str) -> str | None | str:
         if status == "ok":
             return d.get("link")
 
-        # Poll if still converting (up to 4 retries, 2s apart)
         if status == "processing":
             for poll in range(4):
                 time.sleep(2)
@@ -212,21 +164,10 @@ def _call_mp36(video_id: str, api_key: str, masked: str) -> str | None | str:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def get_youtube_stream(query: str) -> tuple[str | None, str | None, None]:
+def get_youtube_stream(query):
     """
-    Main function called by api/index.py.
-
     Returns (stream_url, title, None) on success.
     Returns (None, None, None) on failure.
-
-    Setup in Vercel env vars:
-      RapidAPIKey   = key from account 1
-      RapidAPIKey2  = key from account 2
-      RapidAPIKey3  = key from account 3
-      ...up to as many as you have
-
-    Each key gets 500 free conversions/month on youtube-mp36 (Basic plan).
-    With 6 keys that's 3000 conversions/month — effectively unlimited for personal use.
     """
     video_id, title = _youtube_search(query)
     if not video_id:
