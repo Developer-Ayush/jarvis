@@ -1,12 +1,10 @@
 """
 automation.py — Jarvis AI Alexa Skill
-Lazy Groq client init so import errors don't crash the whole app.
 """
 
 import os
 import logging
 import requests
-from duckduckgo_search import DDGS
 from groq import Groq
 
 logger = logging.getLogger(__name__)
@@ -28,16 +26,18 @@ def _get_client():
 
 def _google_search_spoken(topic: str) -> str:
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(topic, max_results=3))
-        if not results:
-            return f"I couldn't find any results for {topic}."
-        answer = f"Here are the top results for {topic}. "
-        for i, r in enumerate(results, 1):
-            title = r.get("title", "")
-            desc  = r.get("body", "")
-            answer += f"Result {i}: {title}. {desc}. "
-        return answer.strip()
+        client = _get_client()
+        completion = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant. Answer in 3-4 sentences max. Plain text only, no markdown, no bullet points. Will be read aloud by Alexa."},
+                {"role": "user", "content": f"Search results for: {topic}. Give me a brief summary."}
+            ],
+            max_tokens=200,
+            temperature=0.7,
+            stream=False,
+        )
+        return completion.choices[0].message.content.strip()
     except Exception as exc:
         logger.error(f"Search error: {exc}")
         return f"I had trouble searching for {topic}."
@@ -54,17 +54,14 @@ def _youtube_search_spoken(topic: str) -> str:
 
 
 def _content_writer(topic: str) -> str:
-    system = [{"role": "system", "content": (
-        "You are a professional content writer. "
-        "Write what is requested in 100 words or less. "
-        "Plain text only — no bullet points or markdown. "
-        "It will be read aloud by Alexa."
-    )}]
     try:
         client = _get_client()
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant",
-            messages=system + [{"role": "user", "content": topic}],
+            messages=[
+                {"role": "system", "content": "You are a professional content writer. Write what is requested in 100 words or less. Plain text only, no bullet points or markdown. Will be read aloud by Alexa."},
+                {"role": "user", "content": topic}
+            ],
             max_tokens=200,
             temperature=0.7,
             stream=False,
